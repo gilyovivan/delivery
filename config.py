@@ -3,7 +3,7 @@ import pytz
 
 # ─── BOT TOKEN ───────────────────────────────────────────────────────────────
 # Get from @BotFather on Telegram
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8661067926:AAEQKbIW5FLsTJv0BPfUl_3twvetPy8dy7s")
 
 # ─── TIMEZONE ────────────────────────────────────────────────────────────────
 PACIFIC_TZ = pytz.timezone("America/Los_Angeles")
@@ -23,9 +23,8 @@ REPORT_CHAT_ID = int(os.getenv("REPORT_CHAT_ID", "0"))  # Set this!
 #
 # IMPORTANT: Replace these with real Telegram user IDs!
 WHITELIST = {
-    123456789: "Алексей",
-    987654321: "Мария",
-    111222333: "Дмитрий",
+    320394840: "IVAN",
+
     # Add more users here:
     # 444555666: "Иван",
 }
