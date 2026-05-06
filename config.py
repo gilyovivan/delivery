@@ -2,25 +2,29 @@ import os
 import pytz
 
 # ─── BOT TOKEN ───────────────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8661067926:AAEQKbIW5FLsTJv0BPfUl_3twvetPy8dy7s")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
 # ─── TIMEZONE ────────────────────────────────────────────────────────────────
 PACIFIC_TZ = pytz.timezone("America/Los_Angeles")
 
-# ─── RATE ────────────────────────────────────────────────────────────────────
-RATE_PER_PACKAGE = 1.7  # $ per package
+# ─── COMPANY RATE (what the company pays you per package) ────────────────────
+COMPANY_RATE = 1.70
+
+# ─── DEFAULT DRIVER RATE (fallback if no custom rate set) ────────────────────
+DEFAULT_DRIVER_RATE = 0.80
 
 # ─── REPORT CHAT ─────────────────────────────────────────────────────────────
 REPORT_CHAT_ID = int(os.getenv("REPORT_CHAT_ID", "320394840"))  # Set this!
 
+# ─── ADMIN USER ID ───────────────────────────────────────────────────────────
+# Your personal Telegram ID — only you will see admin commands and profit report
+ADMIN_ID = int(os.getenv("ADMIN_ID", "320394840"))
+
 # ─── VALID ROUTES ────────────────────────────────────────────────────────────
-# Add or remove route numbers here as needed
 VALID_ROUTES = {1, 2, 3}
 
 # ─── WHITELIST ───────────────────────────────────────────────────────────────
 # Format: { telegram_user_id (int): "Display Name" }
 WHITELIST = {
-    320394840: "IVAN",
-    # Add more drivers here:
-    # 444555666: "Ivan",
+     320394840: "IVAN",
 }
