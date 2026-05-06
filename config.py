@@ -15,7 +15,7 @@ RATE_PER_PACKAGE = 1.7  # $ per package
 # The chat ID where the bot will send the automatic Sunday report.
 # Can be a group chat ID or a personal chat ID.
 # To get your chat ID: send /start to the bot and check logs, or use @userinfobot
-REPORT_CHAT_ID = int(os.getenv("REPORT_CHAT_ID", "0"))  # Set this!
+REPORT_CHAT_ID = int(os.getenv("REPORT_CHAT_ID", "320394840"))  # Set this!
 
 # ─── WHITELIST ───────────────────────────────────────────────────────────────
 # Format: { telegram_user_id (int): "Display Name" }
