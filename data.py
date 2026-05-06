@@ -14,7 +14,6 @@ def get_conn():
 
 
 def init_db():
-    """Create table if it doesn't exist."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -22,9 +21,10 @@ def init_db():
                     user_id     BIGINT NOT NULL,
                     week_key    TEXT NOT NULL,
                     day_num     SMALLINT NOT NULL,
+                    route       SMALLINT NOT NULL,
                     count       INTEGER NOT NULL,
                     updated_at  TIMESTAMP DEFAULT NOW(),
-                    PRIMARY KEY (user_id, week_key, day_num)
+                    PRIMARY KEY (user_id, week_key, day_num, route)
                 )
             """)
         conn.commit()
@@ -36,25 +36,27 @@ def get_week_key(dt: datetime) -> str:
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
-def record_delivery(user_id: int, count: int, dt: datetime):
+def record_delivery(user_id: int, route: int, count: int, dt: datetime):
+    """Upsert delivery count for a user/route/day. Overwrites if exists."""
     week_key = get_week_key(dt)
-    day_num = dt.weekday()  # 0=Mon, 6=Sun
+    day_num = dt.weekday()
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO deliveries (user_id, week_key, day_num, count, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON CONFLICT (user_id, week_key, day_num)
+                INSERT INTO deliveries (user_id, week_key, day_num, route, count, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id, week_key, day_num, route)
                 DO UPDATE SET count = EXCLUDED.count, updated_at = NOW()
-            """, (user_id, week_key, day_num, count))
+            """, (user_id, week_key, day_num, route, count))
         conn.commit()
-    logger.info(f"Recorded: user={user_id}, week={week_key}, day={day_num}, count={count}")
+    logger.info(f"Recorded: user={user_id}, week={week_key}, day={day_num}, route={route}, count={count}")
 
 
 def get_week_data(dt: datetime) -> dict:
     """
-    Returns: { user_id_int: { day_num: count } }
+    Returns nested dict:
+    { user_id_int: { day_num_int: { route_int: count } } }
     """
     week_key = get_week_key(dt)
     result = {}
@@ -62,17 +64,21 @@ def get_week_data(dt: datetime) -> dict:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT user_id, day_num, count
+                SELECT user_id, day_num, route, count
                 FROM deliveries
                 WHERE week_key = %s
-                ORDER BY user_id, day_num
+                ORDER BY user_id, day_num, route
             """, (week_key,))
             rows = cur.fetchall()
 
     for row in rows:
         uid = row["user_id"]
+        day = row["day_num"]
+        route = row["route"]
         if uid not in result:
             result[uid] = {}
-        result[uid][row["day_num"]] = row["count"]
+        if day not in result[uid]:
+            result[uid][day] = {}
+        result[uid][day][route] = row["count"]
 
     return result
