@@ -49,13 +49,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     routes_str = ", ".join(str(r) for r in sorted(VALID_ROUTES))
 
     msg = (
-        f"👋 Hey, {name}!\n\n"
-        f"To log deliveries send: `<route>, <packages>`\n"
-        f"Example: `2, 63`\n"
-        f"Available routes: {routes_str}\n\n"
-        f"Commands:\n"
-        f"/mystats — your stats for this week\n"
-        f"/report — weekly report"
+        f"👋 Добро пожаловать в Delivery Stat Tracker, {name}!\n\n"
+        f"📦 Как отправить данные:\n"
+        f"Отправь номер маршрута и количество посылок через запятую.\n\n"
+        f"Пример: 2, 63\n"
+        f"Это значит: Маршрут 2, 63 посылки доставлено.\n\n"
+        f"Доступные маршруты: {routes_str}\n\n"
+        f"📊 Команды:\n"
+        f"/mystats — твоя статистика за текущую неделю\n"
+        f"/report — еженедельный отчёт по доставкам\n\n"
+        f"⚠️ Если отправишь данные повторно за тот же день — новое число заменит старое."
     )
 
     if is_admin(user_id):
