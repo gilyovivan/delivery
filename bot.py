@@ -12,10 +12,7 @@ BOT_TOKEN, WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
 PACIFIC_TZ, REPORT_CHAT_ID, ADMIN_ID, VALID_ROUTES
 )
 
-logging.basicConfig(
-format=’%(asctime)s - %(name)s - %(levelname)s - %(message)s’,
-level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(**name**)
 
 DAY_NAMES = [“Mon”, “Tue”, “Wed”, “Thu”, “Fri”, “Sat”, “Sun”]
