@@ -27,4 +27,5 @@ VALID_ROUTES = {1, 2, 3}
 # Format: { telegram_user_id (int): "Display Name" }
 WHITELIST = {
      320394840: "IVAN",
+     327077236: "TAMIRIS"
 }
