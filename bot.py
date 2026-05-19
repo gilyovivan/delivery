@@ -6,7 +6,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from data import init_db, record_delivery, get_week_data, set_driver_rate, get_driver_rate, get_all_rates
+from data import init_db, record_delivery, get_week_data, set_driver_rate, get_driver_rate, get_all_rates, app_day, APP_DAY_NAMES
 from config import (
     BOT_TOKEN, WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
     PACIFIC_TZ, REPORT_CHAT_ID, ADMIN_ID, VALID_ROUTES
@@ -15,7 +15,6 @@ from config import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # Log on startup so we can verify values
 logger.info(f"ADMIN_ID loaded: {ADMIN_ID} (type: {type(ADMIN_ID).__name__})")
@@ -116,10 +115,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = datetime.now(PACIFIC_TZ)
     name = WHITELIST.get(user_id, "Admin")
-    day_name = DAY_NAMES[now.weekday()]
-    date_str = format_date(now)
     driver_rate = get_driver_rate(user_id, DEFAULT_DRIVER_RATE)
     earnings = count * driver_rate
+
+    day_name = APP_DAY_NAMES[app_day(now)]
+    date_str = format_date(now)
 
     record_delivery(user_id, route, count, now)
 
@@ -156,7 +156,7 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         day_total = sum(routes.values())
         total += day_total
         day_dt = week_start + timedelta(days=day_num)
-        lines.append(f"*{DAY_NAMES[day_num]} {format_date(day_dt)}* — {day_total} packages")
+        lines.append(f"*{APP_DAY_NAMES[day_num]} {format_date(day_dt)}* — {day_total} packages")
         for route, count in sorted(routes.items()):
             lines.append(f"  Route {route}: {count}")
 
@@ -187,7 +187,7 @@ async def driver_report(context, chat_id, user_id, week_data, now):
         day_total = sum(routes.values())
         total += day_total
         day_dt = week_start + timedelta(days=day_num)
-        lines.append(f"*{DAY_NAMES[day_num]} {format_date(day_dt)}* — {day_total} packages")
+        lines.append(f"*{APP_DAY_NAMES[day_num]} {format_date(day_dt)}* — {day_total} packages")
         for route, count in sorted(routes.items()):
             lines.append(f"  Route {route}: {count}")
 
@@ -239,7 +239,7 @@ async def admin_report(context, chat_id, now=None):
             day_total = sum(routes.values())
             user_total += day_total
             day_dt = week_start + timedelta(days=day_num)
-            user_lines.append(f"  *{DAY_NAMES[day_num]} {format_date(day_dt)}* — {day_total} pkgs")
+            user_lines.append(f"  *{APP_DAY_NAMES[day_num]} {format_date(day_dt)}* — {day_total} pkgs")
             for route, count in sorted(routes.items()):
                 user_lines.append(f"    Route {route}: {count}")
 
