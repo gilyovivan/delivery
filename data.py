@@ -1,12 +1,32 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Week runs Sun(0) Mon(1) Tue(2) Wed(3) Thu(4) Fri(5) Sat(6)
+# Python weekday(): Mon=0 ... Sun=6
+# We remap: Sun->0, Mon->1, ..., Sat->6
+PYTHON_TO_APP_DAY = {6: 0, 0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6}
+APP_DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+
+def app_day(dt: datetime) -> int:
+    return PYTHON_TO_APP_DAY[dt.weekday()]
+
+
+def get_week_key(dt: datetime) -> str:
+    """
+    Week key based on Sun-Sat week.
+    Sunday starts a new week, so we use Sunday's date as the week anchor.
+    """
+    days_since_sunday = (dt.weekday() + 1) % 7
+    sunday = dt - timedelta(days=days_since_sunday)
+    return sunday.strftime("%Y-W%m%d")
 
 
 def get_conn():
@@ -16,7 +36,6 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Deliveries table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS deliveries (
                     user_id     BIGINT NOT NULL,
@@ -28,7 +47,6 @@ def init_db():
                     PRIMARY KEY (user_id, week_key, day_num, route)
                 )
             """)
-            # Driver rates table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS driver_rates (
                     user_id     BIGINT PRIMARY KEY,
@@ -40,14 +58,9 @@ def init_db():
     logger.info("DB initialized.")
 
 
-def get_week_key(dt: datetime) -> str:
-    iso = dt.isocalendar()
-    return f"{iso[0]}-W{iso[1]:02d}"
-
-
 def record_delivery(user_id: int, route: int, count: int, dt: datetime):
     week_key = get_week_key(dt)
-    day_num = dt.weekday()
+    day_num = app_day(dt)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -85,8 +98,6 @@ def get_week_data(dt: datetime) -> dict:
     return result
 
 
-# ─── DRIVER RATES ─────────────────────────────────────────────────────────────
-
 def set_driver_rate(user_id: int, rate: float):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -97,7 +108,6 @@ def set_driver_rate(user_id: int, rate: float):
                 DO UPDATE SET rate = EXCLUDED.rate, updated_at = NOW()
             """, (user_id, rate))
         conn.commit()
-    logger.info(f"Set rate for user={user_id}: ${rate}")
 
 
 def get_driver_rate(user_id: int, default: float) -> float:
@@ -109,7 +119,6 @@ def get_driver_rate(user_id: int, default: float) -> float:
 
 
 def get_all_rates() -> dict:
-    """Returns: { user_id_int: rate_float }"""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT user_id, rate FROM driver_rates")
