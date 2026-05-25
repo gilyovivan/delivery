@@ -346,16 +346,18 @@ async def rates_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scheduled_reports(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Sending scheduled weekly reports...")
     now = datetime.now(PACIFIC_TZ)
-    week_data = get_week_data(now)
+    # Report runs Sunday evening — show the week that just ended (Sat is yesterday)
+    last_saturday = now - timedelta(days=1)
+    week_data = get_week_data(last_saturday)
 
     for uid in WHITELIST:
         try:
-            await driver_report(context, uid, uid, week_data, now)
+            await driver_report(context, uid, uid, week_data, last_saturday)
         except Exception as e:
             logger.warning(f"Could not send report to user {uid}: {e}")
 
     if REPORT_CHAT_ID:
-        await admin_report(context, REPORT_CHAT_ID, now)
+        await admin_report(context, REPORT_CHAT_ID, last_saturday)
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
