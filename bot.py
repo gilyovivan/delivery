@@ -207,6 +207,28 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await driver_report(context, update.effective_chat.id, user_id, week_data, now)
 
 
+async def last_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_authorized(user_id):
+        await update.message.reply_text("⛔ You don't have access to this bot.")
+        return
+    now = datetime.now(PACIFIC_TZ)
+    # Go back 7 days to get last week
+    last_week = now - timedelta(days=7)
+    week_data = get_week_data(last_week)
+    await driver_report(context, update.effective_chat.id, user_id, week_data, last_week)
+
+
+async def last_admin_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ Admin only.")
+        return
+    now = datetime.now(PACIFIC_TZ)
+    last_week = now - timedelta(days=7)
+    await admin_report(context, update.effective_chat.id, last_week)
+
+
 # ─── /adminreport ────────────────────────────────────────────────────────────
 
 async def admin_report(context, chat_id, now=None):
@@ -369,6 +391,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mystats", my_stats))
     app.add_handler(CommandHandler("report", report_command))
+    app.add_handler(CommandHandler("lastreport", last_report_command))
+    app.add_handler(CommandHandler("lastadminreport", last_admin_report_command))
     app.add_handler(CommandHandler("adminreport", admin_report_command))
     app.add_handler(CommandHandler("setrate", set_rate_command))
     app.add_handler(CommandHandler("rates", rates_command))
