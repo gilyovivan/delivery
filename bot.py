@@ -148,7 +148,8 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     driver_rate = get_driver_rate(user_id, DEFAULT_DRIVER_RATE)
-    week_start = now - timedelta(days=now.weekday())
+    days_since_sunday = (now.weekday() + 1) % 7
+    week_start = now - timedelta(days=days_since_sunday)
     lines = [f"📊 *Your week, {name}:*\n"]
     total = 0
 
@@ -172,7 +173,8 @@ async def driver_report(context, chat_id, user_id, week_data, now):
     name = WHITELIST.get(user_id, "Driver")
     user_data = week_data.get(user_id, {})
     driver_rate = get_driver_rate(user_id, DEFAULT_DRIVER_RATE)
-    week_start = now - timedelta(days=now.weekday())
+    days_since_sunday = (now.weekday() + 1) % 7
+    week_start = now - timedelta(days=days_since_sunday)
     week_end = week_start + timedelta(days=6)
     week_range = f"{format_date(week_start)} – {format_date(week_end)}, {now.year}"
 
@@ -236,7 +238,8 @@ async def admin_report(context, chat_id, now=None):
         now = datetime.now(PACIFIC_TZ)
 
     week_data = get_week_data(now)
-    week_start = now - timedelta(days=now.weekday())
+    days_since_sunday = (now.weekday() + 1) % 7
+    week_start = now - timedelta(days=days_since_sunday)
     week_end = week_start + timedelta(days=6)
     week_range = f"{format_date(week_start)} – {format_date(week_end)}, {now.year}"
 
