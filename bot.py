@@ -215,8 +215,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start)
             profit = company_rev - driver_cost
             lines = [f"*{name} — {week_range}*\n"] + block
-            lines.append(f"\nCompany revenue: ${company_rev:.2f}")
-            lines.append(f"Your profit: *${profit:.2f}*")
+            lines.append(f"\nYour profit: *${profit:.2f}*")
 
         await query.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
