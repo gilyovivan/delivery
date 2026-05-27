@@ -54,7 +54,7 @@ def build_driver_report_text(name, user_data, driver_rate, week_start):
     return "\n".join(lines)
 
 
-def build_admin_driver_block(name, user_data, driver_rate, week_start):
+def build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=False):
     lines = [f"👤 *{name}*  (rate: ${driver_rate:.2f}/pkg)"]
     user_total = 0
     for day_num, routes in sorted(user_data.items()):
@@ -68,9 +68,11 @@ def build_admin_driver_block(name, user_data, driver_rate, week_start):
     driver_cost = user_total * driver_rate
     profit = company_rev - driver_cost
     lines.append(f"  Packages: *{user_total}*")
-    lines.append(f"  Company revenue: ${company_rev:.2f}")
+    if show_revenue:
+        lines.append(f"  Company revenue: ${company_rev:.2f}")
     lines.append(f"  Driver pay: *${driver_cost:.2f}*")
-    lines.append(f"  Your profit: *${profit:.2f}*")
+    if show_revenue:
+        lines.append(f"  Your profit: *${profit:.2f}*")
     return lines, user_total, company_rev, driver_cost
 
 
@@ -186,7 +188,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     continue
                 any_data = True
                 driver_rate = get_driver_rate(uid, DEFAULT_DRIVER_RATE)
-                block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start)
+                block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=True)
                 lines += block
                 lines.append("")
                 grand_packages += user_total
@@ -212,7 +214,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.message.reply_text(f"No data for {name} this period.")
                 return
             driver_rate = get_driver_rate(uid, DEFAULT_DRIVER_RATE)
-            block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start)
+            block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=False)
             profit = company_rev - driver_cost
             lines = [f"*{name} — {week_range}*\n"] + block
             lines.append(f"\nYour profit: *${profit:.2f}*")
@@ -375,7 +377,7 @@ async def admin_report(context, chat_id, now=None):
             continue
         any_data = True
         driver_rate = get_driver_rate(user_id_int, DEFAULT_DRIVER_RATE)
-        block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start)
+        block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=True)
         lines += block
         lines.append("")
         grand_packages += user_total
