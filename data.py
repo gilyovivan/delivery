@@ -124,3 +124,41 @@ def get_all_rates() -> dict:
             cur.execute("SELECT user_id, rate FROM driver_rates")
             rows = cur.fetchall()
     return {row["user_id"]: float(row["rate"]) for row in rows}
+
+
+def get_user_period_data(user_id: int, start_date, end_date) -> dict:
+    """
+    Returns deliveries for one user within [start_date, end_date] inclusive
+    (start_date/end_date are date objects), regardless of week boundaries.
+    Returns: { date_obj: { route_int: count } }
+    """
+    day_map = {}
+    week_keys = set()
+    d = start_date
+    while d <= end_date:
+        week_key = get_week_key(d)
+        day_num = app_day(d)
+        day_map[(week_key, day_num)] = d
+        week_keys.add(week_key)
+        d += timedelta(days=1)
+
+    if not week_keys:
+        return {}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT week_key, day_num, route, count
+                FROM deliveries
+                WHERE user_id = %s AND week_key = ANY(%s)
+            """, (user_id, list(week_keys)))
+            rows = cur.fetchall()
+
+    result = {}
+    for row in rows:
+        key = (row["week_key"], row["day_num"])
+        if key not in day_map:
+            continue
+        d = day_map[key]
+        result.setdefault(d, {})[row["route"]] = row["count"]
+    return result

@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -6,7 +7,10 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from data import init_db, record_delivery, get_week_data, set_driver_rate, get_driver_rate, get_all_rates, app_day, APP_DAY_NAMES
+from data import (
+    init_db, record_delivery, get_week_data, set_driver_rate, get_driver_rate,
+    get_all_rates, app_day, APP_DAY_NAMES, get_user_period_data
+)
 from config import (
     BOT_TOKEN, WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
     PACIFIC_TZ, REPORT_CHAT_ID, ADMIN_ID, VALID_ROUTES
@@ -54,14 +58,14 @@ def build_driver_report_text(name, user_data, driver_rate, week_start):
     return "\n".join(lines)
 
 
-def build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=False):
+def build_driver_block(name, items, driver_rate, show_revenue=False):
+    """items: list of (label, routes_dict), one per day, already sorted."""
     lines = [f"👤 *{name}*  (rate: ${driver_rate:.2f}/pkg)"]
     user_total = 0
-    for day_num, routes in sorted(user_data.items()):
+    for label, routes in items:
         day_total = sum(routes.values())
         user_total += day_total
-        day_dt = week_start + timedelta(days=day_num)
-        lines.append(f"  *{APP_DAY_NAMES[day_num]} {format_date(day_dt)}* — {day_total} pkgs")
+        lines.append(f"  *{label}* — {day_total} pkgs")
         for route, count in sorted(routes.items()):
             lines.append(f"    Route {route}: {count}")
     company_rev = user_total * COMPANY_RATE
@@ -74,6 +78,19 @@ def build_admin_driver_block(name, user_data, driver_rate, week_start, show_reve
     if show_revenue:
         lines.append(f"  Your profit: *${profit:.2f}*")
     return lines, user_total, company_rev, driver_cost
+
+
+def build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=False):
+    items = []
+    for day_num, routes in sorted(user_data.items()):
+        day_dt = week_start + timedelta(days=day_num)
+        items.append((f"{APP_DAY_NAMES[day_num]} {format_date(day_dt)}", routes))
+    return build_driver_block(name, items, driver_rate, show_revenue)
+
+
+def build_period_driver_block(name, period_data, driver_rate, show_revenue=False):
+    items = [(d.strftime("%a %b %-d"), routes) for d, routes in sorted(period_data.items())]
+    return build_driver_block(name, items, driver_rate, show_revenue)
 
 
 # ─── /start ──────────────────────────────────────────────────────────────────
@@ -131,6 +148,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(f"Last week — {name}", callback_data=f"admin_week_last_{uid}"),
         ])
 
+    keyboard.append([InlineKeyboardButton("📅 Custom period", callback_data="admin_customperiod")])
     keyboard.append([InlineKeyboardButton("💰 Driver Rates", callback_data="admin_rates")])
 
     markup = InlineKeyboardMarkup(keyboard)
@@ -151,6 +169,31 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     data = query.data
     now = datetime.now(PACIFIC_TZ)
+
+    if data == "admin_back":
+        await admin_panel(update, context)
+        return
+
+    if data == "admin_customperiod":
+        keyboard = [
+            [InlineKeyboardButton(name, callback_data=f"admin_cp_pick_{uid}")]
+            for uid, name in WHITELIST.items()
+        ]
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+        await query.message.edit_text("Select a driver:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("admin_cp_pick_"):
+        uid = int(data.rsplit("_", 1)[-1])
+        name = WHITELIST.get(uid, "Driver")
+        context.user_data["awaiting_period_uid"] = uid
+        await query.message.edit_text(
+            f"Send a date or date range for *{name}*:\n"
+            f"• Single day: `2026-07-10`\n"
+            f"• Range: `2026-07-01 2026-07-10`",
+            parse_mode='Markdown'
+        )
+        return
 
     if data == "admin_rates":
         all_rates = get_all_rates()
@@ -222,6 +265,51 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 
+# ─── Admin: custom period lookup ─────────────────────────────────────────────
+
+async def handle_period_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = context.user_data.pop("awaiting_period_uid")
+    text = update.message.text.strip()
+    matches = re.findall(r"\d{4}-\d{2}-\d{2}", text)
+
+    if not matches or len(matches) > 2:
+        await update.message.reply_text(
+            "Couldn't parse that. Send a date like `2026-07-10` or a range like "
+            "`2026-07-01 2026-07-10`, or open Admin Panel → Custom period again.",
+            parse_mode='Markdown'
+        )
+        return
+
+    try:
+        dates = sorted(datetime.strptime(m, "%Y-%m-%d").date() for m in matches)
+    except ValueError:
+        await update.message.reply_text("Invalid date(s). Use format YYYY-MM-DD.")
+        return
+
+    start_date, end_date = dates[0], dates[-1]
+    name = WHITELIST.get(uid, "Driver")
+    driver_rate = get_driver_rate(uid, DEFAULT_DRIVER_RATE)
+    period_data = get_user_period_data(uid, start_date, end_date)
+
+    range_str = (
+        start_date.strftime("%b %-d, %Y") if start_date == end_date
+        else f"{start_date.strftime('%b %-d')} – {end_date.strftime('%b %-d, %Y')}"
+    )
+
+    if not period_data:
+        await update.message.reply_text(f"No data for {name} on {range_str}.")
+        return
+
+    block, user_total, company_rev, driver_cost = build_period_driver_block(
+        name, period_data, driver_rate, show_revenue=True
+    )
+    profit = company_rev - driver_cost
+    lines = [f"*{range_str}*\n"] + block
+    lines.append(f"\nYour profit: *${profit:.2f}*")
+
+    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+
+
 # ─── Handle messages & keyboard buttons ──────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,6 +319,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text.strip()
+
+    if is_admin(user_id) and "awaiting_period_uid" in context.user_data:
+        if text not in ("My Stats", "My Report", "Last Week", "Admin Panel"):
+            await handle_period_date_input(update, context)
+            return
+        context.user_data.pop("awaiting_period_uid", None)
 
     if text == "My Stats":
         await my_stats(update, context)
