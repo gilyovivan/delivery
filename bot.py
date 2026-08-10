@@ -149,6 +149,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
     keyboard.append([InlineKeyboardButton("📅 Custom period", callback_data="admin_customperiod")])
+    keyboard.append([InlineKeyboardButton("✏️ Manual entry (backdate)", callback_data="admin_manualentry")])
     keyboard.append([InlineKeyboardButton("💰 Driver Rates", callback_data="admin_rates")])
 
     markup = InlineKeyboardMarkup(keyboard)
@@ -186,11 +187,35 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("admin_cp_pick_"):
         uid = int(data.rsplit("_", 1)[-1])
         name = WHITELIST.get(uid, "Driver")
+        context.user_data.pop("awaiting_manual_entry_uid", None)
         context.user_data["awaiting_period_uid"] = uid
         await query.message.edit_text(
             f"Send a date or date range for *{name}*:\n"
             f"• Single day: `2026-07-10`\n"
             f"• Range: `2026-07-01 2026-07-10`",
+            parse_mode='Markdown'
+        )
+        return
+
+    if data == "admin_manualentry":
+        keyboard = [
+            [InlineKeyboardButton(name, callback_data=f"admin_me_pick_{uid}")]
+            for uid, name in WHITELIST.items()
+        ]
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+        await query.message.edit_text("Select a driver to backdate:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("admin_me_pick_"):
+        uid = int(data.rsplit("_", 1)[-1])
+        name = WHITELIST.get(uid, "Driver")
+        routes_str = ", ".join(str(r) for r in sorted(VALID_ROUTES))
+        context.user_data.pop("awaiting_period_uid", None)
+        context.user_data["awaiting_manual_entry_uid"] = uid
+        await query.message.edit_text(
+            f"Send date, route, packages for *{name}*:\n"
+            f"`2026-08-02, 2, 60`\n\n"
+            f"Available routes: {routes_str}",
             parse_mode='Markdown'
         )
         return
@@ -310,6 +335,56 @@ async def handle_period_date_input(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 
+async def handle_manual_entry_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = context.user_data.pop("awaiting_manual_entry_uid")
+    text = update.message.text.strip()
+    routes_str = ", ".join(str(r) for r in sorted(VALID_ROUTES))
+
+    date_match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    if not date_match:
+        await update.message.reply_text(
+            "Couldn't parse that. Send: date, route, packages\nExample: `2026-08-02, 2, 60`",
+            parse_mode='Markdown'
+        )
+        return
+
+    try:
+        entry_date = datetime.strptime(date_match.group(), "%Y-%m-%d").date()
+    except ValueError:
+        await update.message.reply_text("Invalid date. Use format YYYY-MM-DD.")
+        return
+
+    rest = text[:date_match.start()] + text[date_match.end():]
+    nums = re.findall(r"\d+", rest)
+    if len(nums) != 2:
+        await update.message.reply_text(
+            "Couldn't parse route/packages. Send: date, route, packages\nExample: `2026-08-02, 2, 60`",
+            parse_mode='Markdown'
+        )
+        return
+
+    route, count = int(nums[0]), int(nums[1])
+    if route not in VALID_ROUTES:
+        await update.message.reply_text(f"Route {route} doesn't exist. Available: {routes_str}")
+        return
+    if count < 0:
+        await update.message.reply_text("Packages must be a positive number.")
+        return
+
+    name = WHITELIST.get(uid, "Driver")
+    existing_day = get_user_period_data(uid, entry_date, entry_date).get(entry_date, {})
+    old_count = existing_day.get(route)
+
+    record_delivery(uid, route, count, entry_date)
+
+    day_name = APP_DAY_NAMES[app_day(entry_date)]
+    date_disp = entry_date.strftime("%b %-d, %Y")
+    note = f" (was {old_count})" if old_count is not None else ""
+    await update.message.reply_text(
+        f"✅ Saved for {name}: {day_name} {date_disp} — Route {route}: {count} packages{note}"
+    )
+
+
 # ─── Handle messages & keyboard buttons ──────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,11 +395,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
-    if is_admin(user_id) and "awaiting_period_uid" in context.user_data:
+    if is_admin(user_id) and (
+        "awaiting_period_uid" in context.user_data
+        or "awaiting_manual_entry_uid" in context.user_data
+    ):
         if text not in ("My Stats", "My Report", "Last Week", "Admin Panel"):
-            await handle_period_date_input(update, context)
+            if "awaiting_manual_entry_uid" in context.user_data:
+                await handle_manual_entry_input(update, context)
+            else:
+                await handle_period_date_input(update, context)
             return
         context.user_data.pop("awaiting_period_uid", None)
+        context.user_data.pop("awaiting_manual_entry_uid", None)
 
     if text == "My Stats":
         await my_stats(update, context)
