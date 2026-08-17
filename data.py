@@ -54,6 +54,13 @@ def init_db():
                     updated_at  TIMESTAMP DEFAULT NOW()
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS drivers (
+                    user_id     BIGINT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    added_at    TIMESTAMP DEFAULT NOW()
+                )
+            """)
         conn.commit()
     logger.info("DB initialized.")
 
@@ -124,6 +131,40 @@ def get_all_rates() -> dict:
             cur.execute("SELECT user_id, rate FROM driver_rates")
             rows = cur.fetchall()
     return {row["user_id"]: float(row["rate"]) for row in rows}
+
+
+def get_whitelist() -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, name FROM drivers ORDER BY name")
+            rows = cur.fetchall()
+    return {row["user_id"]: row["name"] for row in rows}
+
+
+def add_driver(user_id: int, name: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO drivers (user_id, name)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name
+            """, (user_id, name))
+        conn.commit()
+
+
+def seed_drivers_from_whitelist(whitelist: dict):
+    """One-time migration: copy env-var WHITELIST entries into the drivers
+    table without overwriting drivers already added/renamed via the bot."""
+    if not whitelist:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for user_id, name in whitelist.items():
+                cur.execute("""
+                    INSERT INTO drivers (user_id, name) VALUES (%s, %s)
+                    ON CONFLICT (user_id) DO NOTHING
+                """, (user_id, name))
+        conn.commit()
 
 
 def get_user_period_data(user_id: int, start_date, end_date) -> dict:

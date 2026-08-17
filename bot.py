@@ -9,10 +9,11 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from data import (
     init_db, record_delivery, get_week_data, set_driver_rate, get_driver_rate,
-    get_all_rates, app_day, APP_DAY_NAMES, get_user_period_data
+    get_all_rates, app_day, APP_DAY_NAMES, get_user_period_data,
+    get_whitelist, add_driver, seed_drivers_from_whitelist
 )
 from config import (
-    BOT_TOKEN, WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
+    BOT_TOKEN, WHITELIST as SEED_WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
     PACIFIC_TZ, REPORT_CHAT_ID, ADMIN_ID, VALID_ROUTES
 )
 
@@ -20,8 +21,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 logger.info(f"ADMIN_ID loaded: {ADMIN_ID} (type: {type(ADMIN_ID).__name__})")
-logger.info(f"WHITELIST loaded: {WHITELIST}")
 logger.info(f"REPORT_CHAT_ID loaded: {REPORT_CHAT_ID}")
+
+# WHITELIST now lives in the DB (drivers table) so it can be edited at
+# runtime from the admin panel. SEED_WHITELIST (from env) only bootstraps
+# it once on first startup.
+WHITELIST = {}
+
+
+def refresh_whitelist():
+    global WHITELIST
+    WHITELIST = get_whitelist()
+    logger.info(f"WHITELIST loaded from DB: {WHITELIST}")
 
 
 def format_date(dt: datetime) -> str:
@@ -150,7 +161,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard.append([InlineKeyboardButton("📅 Custom period", callback_data="admin_customperiod")])
     keyboard.append([InlineKeyboardButton("✏️ Manual entry (backdate)", callback_data="admin_manualentry")])
-    keyboard.append([InlineKeyboardButton("💰 Driver Rates", callback_data="admin_rates")])
+    keyboard.append([InlineKeyboardButton("👥 Manage Drivers", callback_data="admin_managedrivers")])
 
     markup = InlineKeyboardMarkup(keyboard)
     if update.message:
@@ -187,8 +198,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("admin_cp_pick_"):
         uid = int(data.rsplit("_", 1)[-1])
         name = WHITELIST.get(uid, "Driver")
-        context.user_data.pop("awaiting_manual_entry_uid", None)
-        context.user_data["awaiting_period_uid"] = uid
+        context.user_data["admin_pending"] = {"action": "period", "uid": uid}
         await query.message.edit_text(
             f"Send a date or date range for *{name}*:\n"
             f"• Single day: `2026-07-10`\n"
@@ -210,8 +220,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         uid = int(data.rsplit("_", 1)[-1])
         name = WHITELIST.get(uid, "Driver")
         routes_str = ", ".join(str(r) for r in sorted(VALID_ROUTES))
-        context.user_data.pop("awaiting_period_uid", None)
-        context.user_data["awaiting_manual_entry_uid"] = uid
+        context.user_data["admin_pending"] = {"action": "manual_entry", "uid": uid}
         await query.message.edit_text(
             f"Send date, route, packages for *{name}*:\n"
             f"`2026-08-02, 2, 60`\n\n"
@@ -220,16 +229,41 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    if data == "admin_rates":
+    if data == "admin_managedrivers":
         all_rates = get_all_rates()
-        lines = ["*Driver Rates:*\n"]
+        lines = ["*Manage Drivers:*\n"]
+        keyboard = []
         for uid, name in WHITELIST.items():
             rate = all_rates.get(uid, DEFAULT_DRIVER_RATE)
             tag = " (default)" if uid not in all_rates else ""
             lines.append(f"  *{name}* — ${rate:.2f}/pkg{tag}")
             lines.append(f"  ID: `{uid}`\n")
+            keyboard.append([InlineKeyboardButton(f"✏️ {name} — ${rate:.2f}", callback_data=f"admin_rate_pick_{uid}")])
         lines.append(f"Company rate: *${COMPANY_RATE:.2f}/pkg*")
-        await query.message.reply_text("\n".join(lines), parse_mode='Markdown')
+        keyboard.append([InlineKeyboardButton("➕ Add driver", callback_data="admin_adddriver")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+        await query.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return
+
+    if data.startswith("admin_rate_pick_"):
+        uid = int(data.rsplit("_", 1)[-1])
+        name = WHITELIST.get(uid, "Driver")
+        current_rate = get_driver_rate(uid, DEFAULT_DRIVER_RATE)
+        context.user_data["admin_pending"] = {"action": "edit_rate", "uid": uid}
+        await query.message.edit_text(
+            f"Send new rate for *{name}* (current: ${current_rate:.2f}/pkg):\nExample: `0.85`",
+            parse_mode='Markdown'
+        )
+        return
+
+    if data == "admin_adddriver":
+        context.user_data["admin_pending"] = {"action": "add_driver"}
+        await query.message.edit_text(
+            "Send the new driver's Telegram ID and name:\n"
+            "`5551234567, Alex`\n\n"
+            "The driver can get their ID from @userinfobot on Telegram.",
+            parse_mode='Markdown'
+        )
         return
 
     if data.startswith("admin_week_"):
@@ -292,8 +326,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ─── Admin: custom period lookup ─────────────────────────────────────────────
 
-async def handle_period_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = context.user_data.pop("awaiting_period_uid")
+async def handle_period_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
     text = update.message.text.strip()
     matches = re.findall(r"\d{4}-\d{2}-\d{2}", text)
 
@@ -335,8 +368,7 @@ async def handle_period_date_input(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 
-async def handle_manual_entry_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = context.user_data.pop("awaiting_manual_entry_uid")
+async def handle_manual_entry_input(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
     text = update.message.text.strip()
     routes_str = ", ".join(str(r) for r in sorted(VALID_ROUTES))
 
@@ -385,6 +417,64 @@ async def handle_manual_entry_input(update: Update, context: ContextTypes.DEFAUL
     )
 
 
+# ─── Admin: manage drivers ────────────────────────────────────────────────────
+
+async def handle_edit_rate_input(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
+    text = update.message.text.strip().replace(",", ".")
+    try:
+        rate = float(text)
+        if rate <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("Invalid rate. Send a positive number, e.g. 0.85")
+        return
+
+    set_driver_rate(uid, rate)
+    name = WHITELIST.get(uid, "Driver")
+    await update.message.reply_text(f"✅ Rate updated: {name} → ${rate:.2f}/pkg")
+
+
+async def handle_add_driver_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    match = re.match(r"^(\d+)\s*,\s*(.+)$", text)
+    if not match:
+        await update.message.reply_text(
+            "Couldn't parse that. Send: telegram_id, name\nExample: `5551234567, Alex`",
+            parse_mode='Markdown'
+        )
+        return
+
+    new_uid = int(match.group(1))
+    name = match.group(2).strip()
+    if not name:
+        await update.message.reply_text("Name can't be empty.")
+        return
+
+    is_rename = new_uid in WHITELIST
+    add_driver(new_uid, name)
+    refresh_whitelist()
+
+    if is_rename:
+        await update.message.reply_text(f"✅ Updated driver: {name} (ID {new_uid})")
+    else:
+        await update.message.reply_text(
+            f"✅ Added driver: {name} (ID {new_uid})\nThey can now send /start to begin."
+        )
+
+
+async def handle_admin_pending_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pending = context.user_data.pop("admin_pending")
+    action = pending["action"]
+    if action == "period":
+        await handle_period_date_input(update, context, pending["uid"])
+    elif action == "manual_entry":
+        await handle_manual_entry_input(update, context, pending["uid"])
+    elif action == "edit_rate":
+        await handle_edit_rate_input(update, context, pending["uid"])
+    elif action == "add_driver":
+        await handle_add_driver_input(update, context)
+
+
 # ─── Handle messages & keyboard buttons ──────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -395,18 +485,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
-    if is_admin(user_id) and (
-        "awaiting_period_uid" in context.user_data
-        or "awaiting_manual_entry_uid" in context.user_data
-    ):
+    if is_admin(user_id) and "admin_pending" in context.user_data:
         if text not in ("My Stats", "My Report", "Last Week", "Admin Panel"):
-            if "awaiting_manual_entry_uid" in context.user_data:
-                await handle_manual_entry_input(update, context)
-            else:
-                await handle_period_date_input(update, context)
+            await handle_admin_pending_input(update, context)
             return
-        context.user_data.pop("awaiting_period_uid", None)
-        context.user_data.pop("awaiting_manual_entry_uid", None)
+        context.user_data.pop("admin_pending", None)
 
     if text == "My Stats":
         await my_stats(update, context)
@@ -645,6 +728,8 @@ async def scheduled_reports(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()
+    seed_drivers_from_whitelist(SEED_WHITELIST)
+    refresh_whitelist()
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
