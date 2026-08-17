@@ -10,7 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from data import (
     init_db, record_delivery, get_week_data, set_driver_rate, get_driver_rate,
     get_all_rates, app_day, APP_DAY_NAMES, get_user_period_data,
-    get_whitelist, add_driver, seed_drivers_from_whitelist
+    get_whitelist, add_driver, remove_driver, seed_drivers_from_whitelist
 )
 from config import (
     BOT_TOKEN, WHITELIST as SEED_WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
@@ -238,7 +238,10 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             tag = " (default)" if uid not in all_rates else ""
             lines.append(f"  *{name}* — ${rate:.2f}/pkg{tag}")
             lines.append(f"  ID: `{uid}`\n")
-            keyboard.append([InlineKeyboardButton(f"✏️ {name} — ${rate:.2f}", callback_data=f"admin_rate_pick_{uid}")])
+            keyboard.append([
+                InlineKeyboardButton(f"✏️ {name} — ${rate:.2f}", callback_data=f"admin_rate_pick_{uid}"),
+                InlineKeyboardButton("🗑", callback_data=f"admin_rm_pick_{uid}"),
+            ])
         lines.append(f"Company rate: *${COMPANY_RATE:.2f}/pkg*")
         keyboard.append([InlineKeyboardButton("➕ Add driver", callback_data="admin_adddriver")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
@@ -264,6 +267,29 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             "The driver can get their ID from @userinfobot on Telegram.",
             parse_mode='Markdown'
         )
+        return
+
+    if data.startswith("admin_rm_pick_"):
+        uid = int(data.rsplit("_", 1)[-1])
+        name = WHITELIST.get(uid, "Driver")
+        keyboard = [
+            [InlineKeyboardButton("✅ Yes, remove", callback_data=f"admin_rm_confirm_{uid}")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="admin_managedrivers")],
+        ]
+        await query.message.edit_text(
+            f"Remove *{name}* (ID `{uid}`)?\n\n"
+            f"They'll lose bot access immediately. Delivery history and rate are kept.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return
+
+    if data.startswith("admin_rm_confirm_"):
+        uid = int(data.rsplit("_", 1)[-1])
+        name = WHITELIST.get(uid, "Driver")
+        remove_driver(uid)
+        refresh_whitelist()
+        await query.message.edit_text(f"🗑 Removed {name} (ID {uid}) from the whitelist.")
         return
 
     if data.startswith("admin_week_"):

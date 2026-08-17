@@ -152,6 +152,14 @@ def add_driver(user_id: int, name: str):
         conn.commit()
 
 
+def remove_driver(user_id: int):
+    """Revokes bot access. Delivery history and driver_rates are kept."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM drivers WHERE user_id = %s", (user_id,))
+        conn.commit()
+
+
 def seed_drivers_from_whitelist(whitelist: dict):
     """One-time migration: copy env-var WHITELIST entries into the drivers
     table without overwriting drivers already added/renamed via the bot."""
