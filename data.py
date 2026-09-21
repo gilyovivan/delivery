@@ -55,6 +55,15 @@ def init_db():
                 )
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS driver_route_rates (
+                    user_id     BIGINT NOT NULL,
+                    route       SMALLINT NOT NULL,
+                    rate        NUMERIC(6,2) NOT NULL,
+                    updated_at  TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (user_id, route)
+                )
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS drivers (
                     user_id     BIGINT PRIMARY KEY,
                     name        TEXT NOT NULL,
@@ -131,6 +140,53 @@ def get_all_rates() -> dict:
             cur.execute("SELECT user_id, rate FROM driver_rates")
             rows = cur.fetchall()
     return {row["user_id"]: float(row["rate"]) for row in rows}
+
+
+def set_route_rate(user_id: int, route: int, rate: float):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO driver_route_rates (user_id, route, rate, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (user_id, route)
+                DO UPDATE SET rate = EXCLUDED.rate, updated_at = NOW()
+            """, (user_id, route, rate))
+        conn.commit()
+
+
+def delete_route_rate(user_id: int, route: int):
+    """Drops the override so the route falls back to the driver's base rate."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM driver_route_rates WHERE user_id = %s AND route = %s",
+                (user_id, route),
+            )
+        conn.commit()
+
+
+def get_route_rates(user_id: int) -> dict:
+    """Returns: { route_int: rate } — only routes with their own rate."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT route, rate FROM driver_route_rates WHERE user_id = %s",
+                (user_id,),
+            )
+            rows = cur.fetchall()
+    return {row["route"]: float(row["rate"]) for row in rows}
+
+
+def get_all_route_rates() -> dict:
+    """Returns: { user_id_int: { route_int: rate } }"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, route, rate FROM driver_route_rates")
+            rows = cur.fetchall()
+    result = {}
+    for row in rows:
+        result.setdefault(row["user_id"], {})[row["route"]] = float(row["rate"])
+    return result
 
 
 def get_whitelist() -> dict:

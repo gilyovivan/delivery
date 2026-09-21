@@ -10,7 +10,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from data import (
     init_db, record_delivery, get_week_data, set_driver_rate, get_driver_rate,
     get_all_rates, app_day, APP_DAY_NAMES, get_user_period_data,
-    get_whitelist, add_driver, remove_driver, seed_drivers_from_whitelist
+    get_whitelist, add_driver, remove_driver, seed_drivers_from_whitelist,
+    set_route_rate, delete_route_rate, get_route_rates, get_all_route_rates
 )
 from config import (
     BOT_TOKEN, WHITELIST as SEED_WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
@@ -52,35 +53,68 @@ def get_week_start(dt: datetime) -> datetime:
     return dt - timedelta(days=days_since_sunday)
 
 
-def build_driver_report_text(name, user_data, driver_rate, week_start):
+class RateCard:
+    """A driver's pay rates: a base rate plus per-route overrides."""
+
+    def __init__(self, base, overrides):
+        self.base = base
+        self.overrides = overrides
+
+    def for_route(self, route):
+        return self.overrides.get(route, self.base)
+
+    def pay(self, routes):
+        """routes: { route: count } -> driver pay for that day."""
+        return sum(count * self.for_route(route) for route, count in routes.items())
+
+    def suffix(self, route):
+        """Per-route rate tag, shown only when the driver has overrides."""
+        return f" @ ${self.for_route(route):.2f}" if self.overrides else ""
+
+    def label(self):
+        if not self.overrides:
+            return f"${self.base:.2f}/pkg"
+        parts = [f"${self.base:.2f} base"]
+        parts += [f"R{route} ${rate:.2f}" for route, rate in sorted(self.overrides.items())]
+        return " · ".join(parts)
+
+
+def get_rate_card(user_id) -> RateCard:
+    return RateCard(get_driver_rate(user_id, DEFAULT_DRIVER_RATE), get_route_rates(user_id))
+
+
+def build_driver_report_text(name, user_data, card, week_start):
     week_end = week_start + timedelta(days=6)
     week_range = f"{format_date(week_start)} – {format_date(week_end)}, {week_start.year}"
     lines = [f"📋 *Weekly Report — {name}*", f"🗓 {week_range}\n"]
     total = 0
+    earnings = 0.0
     for day_num, routes in sorted(user_data.items()):
         day_total = sum(routes.values())
         total += day_total
+        earnings += card.pay(routes)
         day_dt = week_start + timedelta(days=day_num)
         lines.append(f"*{APP_DAY_NAMES[day_num]} {format_date(day_dt)}* — {day_total} packages")
         for route, count in sorted(routes.items()):
-            lines.append(f"  Route {route}: {count}")
+            lines.append(f"  Route {route}: {count}{card.suffix(route)}")
     lines.append(f"\n📦 Total: *{total}* packages")
-    lines.append(f"💰 Your earnings: *${total * driver_rate:.2f}*")
+    lines.append(f"💰 Your earnings: *${earnings:.2f}*")
     return "\n".join(lines)
 
 
-def build_driver_block(name, items, driver_rate, show_revenue=False):
+def build_driver_block(name, items, card, show_revenue=False):
     """items: list of (label, routes_dict), one per day, already sorted."""
-    lines = [f"👤 *{name}*  (rate: ${driver_rate:.2f}/pkg)"]
+    lines = [f"👤 *{name}*  (rate: {card.label()})"]
     user_total = 0
+    driver_cost = 0.0
     for label, routes in items:
         day_total = sum(routes.values())
         user_total += day_total
+        driver_cost += card.pay(routes)
         lines.append(f"  *{label}* — {day_total} pkgs")
         for route, count in sorted(routes.items()):
-            lines.append(f"    Route {route}: {count}")
+            lines.append(f"    Route {route}: {count}{card.suffix(route)}")
     company_rev = user_total * COMPANY_RATE
-    driver_cost = user_total * driver_rate
     profit = company_rev - driver_cost
     lines.append(f"  Packages: *{user_total}*")
     if show_revenue:
@@ -91,17 +125,17 @@ def build_driver_block(name, items, driver_rate, show_revenue=False):
     return lines, user_total, company_rev, driver_cost
 
 
-def build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=False):
+def build_admin_driver_block(name, user_data, card, week_start, show_revenue=False):
     items = []
     for day_num, routes in sorted(user_data.items()):
         day_dt = week_start + timedelta(days=day_num)
         items.append((f"{APP_DAY_NAMES[day_num]} {format_date(day_dt)}", routes))
-    return build_driver_block(name, items, driver_rate, show_revenue)
+    return build_driver_block(name, items, card, show_revenue)
 
 
-def build_period_driver_block(name, period_data, driver_rate, show_revenue=False):
+def build_period_driver_block(name, period_data, card, show_revenue=False):
     items = [(d.strftime("%a %b %-d"), routes) for d, routes in sorted(period_data.items())]
-    return build_driver_block(name, items, driver_rate, show_revenue)
+    return build_driver_block(name, items, card, show_revenue)
 
 
 # ─── /start ──────────────────────────────────────────────────────────────────
@@ -231,15 +265,18 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data == "admin_managedrivers":
         all_rates = get_all_rates()
+        all_route_rates = get_all_route_rates()
         lines = ["*Manage Drivers:*\n"]
         keyboard = []
         for uid, name in WHITELIST.items():
             rate = all_rates.get(uid, DEFAULT_DRIVER_RATE)
             tag = " (default)" if uid not in all_rates else ""
-            lines.append(f"  *{name}* — ${rate:.2f}/pkg{tag}")
+            lines.append(f"  *{name}* — base ${rate:.2f}/pkg{tag}")
+            for route, route_rate in sorted(all_route_rates.get(uid, {}).items()):
+                lines.append(f"    Route {route}: ${route_rate:.2f}/pkg")
             lines.append(f"  ID: `{uid}`\n")
             keyboard.append([
-                InlineKeyboardButton(f"✏️ {name} — ${rate:.2f}", callback_data=f"admin_rate_pick_{uid}"),
+                InlineKeyboardButton(f"✏️ {name} — rates", callback_data=f"admin_rate_pick_{uid}"),
                 InlineKeyboardButton("🗑", callback_data=f"admin_rm_pick_{uid}"),
             ])
         lines.append(f"Company rate: *${COMPANY_RATE:.2f}/pkg*")
@@ -250,13 +287,37 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data.startswith("admin_rate_pick_"):
         uid = int(data.rsplit("_", 1)[-1])
+        await show_rate_menu(query, uid)
+        return
+
+    if data.startswith("admin_ratebase_"):
+        uid = int(data.rsplit("_", 1)[-1])
         name = WHITELIST.get(uid, "Driver")
-        current_rate = get_driver_rate(uid, DEFAULT_DRIVER_RATE)
-        context.user_data["admin_pending"] = {"action": "edit_rate", "uid": uid}
+        card = get_rate_card(uid)
+        context.user_data["admin_pending"] = {"action": "edit_rate", "uid": uid, "route": None}
         await query.message.edit_text(
-            f"Send new rate for *{name}* (current: ${current_rate:.2f}/pkg):\nExample: `0.85`",
+            f"Send new *base* rate for *{name}* (current: ${card.base:.2f}/pkg).\n"
+            f"It applies to every route without its own rate.\nExample: `0.85`",
             parse_mode='Markdown'
         )
+        return
+
+    if data.startswith("admin_rateroute_"):
+        uid, route = (int(x) for x in data[len("admin_rateroute_"):].split("_"))
+        name = WHITELIST.get(uid, "Driver")
+        card = get_rate_card(uid)
+        context.user_data["admin_pending"] = {"action": "edit_rate", "uid": uid, "route": route}
+        await query.message.edit_text(
+            f"Send new rate for *{name}* on *Route {route}* "
+            f"(current: ${card.for_route(route):.2f}/pkg):\nExample: `0.90`",
+            parse_mode='Markdown'
+        )
+        return
+
+    if data.startswith("admin_ratereset_"):
+        uid, route = (int(x) for x in data[len("admin_ratereset_"):].split("_"))
+        delete_route_rate(uid, route)
+        await show_rate_menu(query, uid)
         return
 
     if data == "admin_adddriver":
@@ -315,8 +376,8 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 if not user_data:
                     continue
                 any_data = True
-                driver_rate = get_driver_rate(uid, DEFAULT_DRIVER_RATE)
-                block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=True)
+                card = get_rate_card(uid)
+                block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, week_start, show_revenue=True)
                 lines += block
                 lines.append("")
                 grand_packages += user_total
@@ -341,13 +402,37 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             if not user_data:
                 await query.message.reply_text(f"No data for {name} this period.")
                 return
-            driver_rate = get_driver_rate(uid, DEFAULT_DRIVER_RATE)
-            block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=False)
+            card = get_rate_card(uid)
+            block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, week_start, show_revenue=False)
             profit = company_rev - driver_cost
             lines = [f"*{name} — {week_range}*\n"] + block
             lines.append(f"\nYour profit: *${profit:.2f}*")
 
         await query.message.reply_text("\n".join(lines), parse_mode='Markdown')
+
+
+async def show_rate_menu(query, uid: int):
+    name = WHITELIST.get(uid, "Driver")
+    card = get_rate_card(uid)
+    lines = [
+        f"*Rates — {name}*\n",
+        f"Base: *${card.base:.2f}/pkg* — used for routes without their own rate.\n",
+    ]
+    keyboard = [[InlineKeyboardButton(f"✏️ Base — ${card.base:.2f}", callback_data=f"admin_ratebase_{uid}")]]
+    for route in sorted(VALID_ROUTES):
+        own = route in card.overrides
+        rate = card.for_route(route)
+        lines.append(f"Route {route}: *${rate:.2f}*" + ("" if own else " (base)"))
+        row = [InlineKeyboardButton(
+            f"✏️ Route {route} — ${rate:.2f}", callback_data=f"admin_rateroute_{uid}_{route}"
+        )]
+        if own:
+            row.append(InlineKeyboardButton("↩️ base", callback_data=f"admin_ratereset_{uid}_{route}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_managedrivers")])
+    await query.message.edit_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+    )
 
 
 # ─── Admin: custom period lookup ─────────────────────────────────────────────
@@ -372,7 +457,7 @@ async def handle_period_date_input(update: Update, context: ContextTypes.DEFAULT
 
     start_date, end_date = dates[0], dates[-1]
     name = WHITELIST.get(uid, "Driver")
-    driver_rate = get_driver_rate(uid, DEFAULT_DRIVER_RATE)
+    card = get_rate_card(uid)
     period_data = get_user_period_data(uid, start_date, end_date)
 
     range_str = (
@@ -385,7 +470,7 @@ async def handle_period_date_input(update: Update, context: ContextTypes.DEFAULT
         return
 
     block, user_total, company_rev, driver_cost = build_period_driver_block(
-        name, period_data, driver_rate, show_revenue=True
+        name, period_data, card, show_revenue=True
     )
     profit = company_rev - driver_cost
     lines = [f"*{range_str}*\n"] + block
@@ -445,7 +530,7 @@ async def handle_manual_entry_input(update: Update, context: ContextTypes.DEFAUL
 
 # ─── Admin: manage drivers ────────────────────────────────────────────────────
 
-async def handle_edit_rate_input(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
+async def handle_edit_rate_input(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int, route=None):
     text = update.message.text.strip().replace(",", ".")
     try:
         rate = float(text)
@@ -455,9 +540,13 @@ async def handle_edit_rate_input(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("Invalid rate. Send a positive number, e.g. 0.85")
         return
 
-    set_driver_rate(uid, rate)
     name = WHITELIST.get(uid, "Driver")
-    await update.message.reply_text(f"✅ Rate updated: {name} → ${rate:.2f}/pkg")
+    if route is None:
+        set_driver_rate(uid, rate)
+        await update.message.reply_text(f"✅ Base rate updated: {name} → ${rate:.2f}/pkg")
+    else:
+        set_route_rate(uid, route, rate)
+        await update.message.reply_text(f"✅ Rate updated: {name}, Route {route} → ${rate:.2f}/pkg")
 
 
 async def handle_add_driver_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -496,7 +585,7 @@ async def handle_admin_pending_input(update: Update, context: ContextTypes.DEFAU
     elif action == "manual_entry":
         await handle_manual_entry_input(update, context, pending["uid"])
     elif action == "edit_rate":
-        await handle_edit_rate_input(update, context, pending["uid"])
+        await handle_edit_rate_input(update, context, pending["uid"], pending.get("route"))
     elif action == "add_driver":
         await handle_add_driver_input(update, context)
 
@@ -554,7 +643,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = datetime.now(PACIFIC_TZ)
     name = WHITELIST.get(user_id, "Admin")
-    driver_rate = get_driver_rate(user_id, DEFAULT_DRIVER_RATE)
+    driver_rate = get_rate_card(user_id).for_route(route)
     earnings = count * driver_rate
     day_name = APP_DAY_NAMES[app_day(now)]
     date_str = format_date(now)
@@ -583,21 +672,23 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{name}, no data for this week yet.")
         return
 
-    driver_rate = get_driver_rate(user_id, DEFAULT_DRIVER_RATE)
+    card = get_rate_card(user_id)
     week_start = get_week_start(now)
     lines = [f"Your week, {name}:\n"]
     total = 0
+    earnings = 0.0
 
     for day_num, routes in sorted(user_data.items()):
         day_total = sum(routes.values())
         total += day_total
+        earnings += card.pay(routes)
         day_dt = week_start + timedelta(days=day_num)
         lines.append(f"{APP_DAY_NAMES[day_num]} {format_date(day_dt)} — {day_total} packages")
         for route, count in sorted(routes.items()):
-            lines.append(f"  Route {route}: {count}")
+            lines.append(f"  Route {route}: {count}{card.suffix(route)}")
 
     lines.append(f"\nTotal: {total} packages")
-    lines.append(f"Your earnings: ${total * driver_rate:.2f}  (${driver_rate}/pkg)")
+    lines.append(f"Your earnings: ${earnings:.2f}  ({card.label()})")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -607,14 +698,14 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def driver_report(context, chat_id, user_id, week_data, now):
     name = WHITELIST.get(user_id, "Driver")
     user_data = week_data.get(user_id, {})
-    driver_rate = get_driver_rate(user_id, DEFAULT_DRIVER_RATE)
+    card = get_rate_card(user_id)
     week_start = get_week_start(now)
 
     if not user_data:
         await context.bot.send_message(chat_id=chat_id, text=f"{name}, no data for this week yet.")
         return
 
-    text = build_driver_report_text(name, user_data, driver_rate, week_start)
+    text = build_driver_report_text(name, user_data, card, week_start)
     await context.bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown')
 
 
@@ -661,8 +752,8 @@ async def admin_report(context, chat_id, now=None):
         if not user_data:
             continue
         any_data = True
-        driver_rate = get_driver_rate(user_id_int, DEFAULT_DRIVER_RATE)
-        block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, driver_rate, week_start, show_revenue=True)
+        card = get_rate_card(user_id_int)
+        block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, week_start, show_revenue=True)
         lines += block
         lines.append("")
         grand_packages += user_total
@@ -710,26 +801,42 @@ async def set_rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     args = context.args
-    if len(args) != 2:
-        await update.message.reply_text("Usage: /setrate user_id rate\nExample: /setrate 123456789 0.80")
+    usage = (
+        "Usage:\n"
+        "/setrate user_id rate — base rate\n"
+        "/setrate user_id route rate — rate for one route\n"
+        "Example: /setrate 123456789 2 0.90"
+    )
+    if len(args) not in (2, 3):
+        await update.message.reply_text(usage)
         return
 
     try:
         target_id = int(args[0])
-        rate = float(args[1])
+        route = int(args[1]) if len(args) == 3 else None
+        rate = float(args[-1])
         if rate <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("Invalid user_id or rate.")
+        await update.message.reply_text("Invalid user_id, route or rate.")
         return
 
     if target_id not in WHITELIST:
         await update.message.reply_text(f"User {target_id} not found in whitelist.")
         return
 
-    set_driver_rate(target_id, rate)
+    if route is not None and route not in VALID_ROUTES:
+        routes_str = ", ".join(str(r) for r in sorted(VALID_ROUTES))
+        await update.message.reply_text(f"Route {route} doesn't exist. Available: {routes_str}")
+        return
+
     name = WHITELIST[target_id]
-    await update.message.reply_text(f"Rate updated! {name} -> ${rate:.2f}/package")
+    if route is None:
+        set_driver_rate(target_id, rate)
+        await update.message.reply_text(f"Rate updated! {name} -> ${rate:.2f}/package (base)")
+    else:
+        set_route_rate(target_id, route, rate)
+        await update.message.reply_text(f"Rate updated! {name}, Route {route} -> ${rate:.2f}/package")
 
 
 # ─── Scheduled reports ───────────────────────────────────────────────────────
