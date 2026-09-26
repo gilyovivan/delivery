@@ -8,11 +8,12 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from data import (
-    init_db, record_delivery, get_week_data, set_driver_rate, get_driver_rate,
+    init_db, record_delivery, get_week_data, set_driver_rate,
     get_all_rates, app_day, APP_DAY_NAMES, get_user_period_data,
     get_whitelist, add_driver, remove_driver, seed_drivers_from_whitelist,
-    set_route_rate, delete_route_rate, get_route_rates, get_all_route_rates
+    set_route_rate, delete_route_rate, get_all_route_rates
 )
+from rates import get_rate_card
 from config import (
     BOT_TOKEN, WHITELIST as SEED_WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
     PACIFIC_TZ, REPORT_CHAT_ID, ADMIN_ID, VALID_ROUTES
@@ -51,36 +52,6 @@ def is_authorized(user_id: int) -> bool:
 def get_week_start(dt: datetime) -> datetime:
     days_since_sunday = (dt.weekday() + 1) % 7
     return dt - timedelta(days=days_since_sunday)
-
-
-class RateCard:
-    """A driver's pay rates: a base rate plus per-route overrides."""
-
-    def __init__(self, base, overrides):
-        self.base = base
-        self.overrides = overrides
-
-    def for_route(self, route):
-        return self.overrides.get(route, self.base)
-
-    def pay(self, routes):
-        """routes: { route: count } -> driver pay for that day."""
-        return sum(count * self.for_route(route) for route, count in routes.items())
-
-    def suffix(self, route):
-        """Per-route rate tag, shown only when the driver has overrides."""
-        return f" @ ${self.for_route(route):.2f}" if self.overrides else ""
-
-    def label(self):
-        if not self.overrides:
-            return f"${self.base:.2f}/pkg"
-        parts = [f"${self.base:.2f} base"]
-        parts += [f"R{route} ${rate:.2f}" for route, rate in sorted(self.overrides.items())]
-        return " · ".join(parts)
-
-
-def get_rate_card(user_id) -> RateCard:
-    return RateCard(get_driver_rate(user_id, DEFAULT_DRIVER_RATE), get_route_rates(user_id))
 
 
 def build_driver_report_text(name, user_data, card, week_start):
