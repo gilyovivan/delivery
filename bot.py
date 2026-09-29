@@ -49,6 +49,20 @@ def is_authorized(user_id: int) -> bool:
     return user_id in WHITELIST or is_admin(user_id)
 
 
+# Drivers separate route and packages however they like: "2, 63", "2.63",
+# "2 63", "2/63", "2-63". Anything that isn't two plain numbers is rejected
+# rather than guessed at.
+ROUTE_COUNT_RE = re.compile(r"^(\d+)(?:\s*[-—–]\s*|[\s,.;:/\\|·]+)(\d+)$")
+
+
+def parse_route_count(text: str):
+    """Returns (route, count), or None if the text isn't a route/packages pair."""
+    match = ROUTE_COUNT_RE.match(text.strip())
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
 def get_week_start(dt: datetime) -> datetime:
     days_since_sunday = (dt.weekday() + 1) % 7
     return dt - timedelta(days=days_since_sunday)
@@ -123,9 +137,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"Добро пожаловать в Delivery Stat Tracker, {name}!\n\n"
         f"Как отправить данные:\n"
-        f"Отправь номер маршрута и количество посылок через запятую.\n\n"
+        f"Отправь номер маршрута и количество посылок.\n\n"
         f"Пример: 2, 63\n"
         f"Это значит: Маршрут 2, 63 посылки доставлено.\n\n"
+        f"Разделить можно чем угодно: 2, 63 / 2.63 / 2 63 / 2/63 / 2-63\n\n"
         f"Доступные маршруты: {routes_str}\n\n"
         f"Если отправишь данные повторно за тот же день — новое число заменит старое."
     )
@@ -590,23 +605,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await admin_panel(update, context)
         return
 
-    parts = [p.strip() for p in text.split(",")]
-    if len(parts) != 2:
+    pair = parse_route_count(text)
+    if pair is None:
         routes_str = ", ".join(str(r) for r in sorted(VALID_ROUTES))
         await update.message.reply_text(
-            f"Wrong format. Send: route, packages\nExample: 2, 63\nAvailable routes: {routes_str}"
+            f"Wrong format. Send: route, packages\n"
+            f"Example: 2, 63 — or 2.63, 2 63, 2/63, 2-63\n"
+            f"Available routes: {routes_str}"
         )
         return
 
-    try:
-        route = int(parts[0])
-        count = int(parts[1])
-        if count < 0 or route < 0:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text("Both values must be positive numbers.\nExample: 2, 63")
-        return
-
+    route, count = pair
     if route not in VALID_ROUTES:
         routes_str = ", ".join(str(r) for r in sorted(VALID_ROUTES))
         await update.message.reply_text(f"Route {route} doesn't exist. Available: {routes_str}")
