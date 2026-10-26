@@ -12,9 +12,8 @@ import os
 import sys
 from datetime import datetime
 
-from config import COMPANY_RATE
 from data import APP_DAY_NAMES, app_day, get_user_period_data, get_whitelist
-from rates import get_rate_card
+from rates import get_company_card, get_rate_card
 
 USAGE = __doc__
 
@@ -75,12 +74,14 @@ def main(argv):
         start, end = end, start
 
     card = get_rate_card(uid)
+    company = get_company_card()
     period = get_user_period_data(uid, start, end)
 
     span = (start.strftime("%b %-d, %Y") if start == end
             else f"{start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}")
     print(f"{name} — {span}")
-    print(f"rate: {card.label()}")
+    print(f"driver rate: {card.label()}")
+    print(f"amazon pays: {company.label()}")
     print()
 
     if not period:
@@ -89,12 +90,14 @@ def main(argv):
 
     total = 0
     pay = 0.0
+    revenue = 0.0
     days_worked = 0
     per_route = {}
     for day, routes in sorted(period.items()):
         day_total = sum(routes.values())
         total += day_total
         pay += card.pay(routes)
+        revenue += company.pay(routes)
         days_worked += 1
         detail = "  ".join(
             f"R{route}: {count} @ ${card.for_route(route):.2f}"
@@ -104,16 +107,15 @@ def main(argv):
             per_route[route] = per_route.get(route, 0) + count
         print(f"{APP_DAY_NAMES[app_day(day)]} {day.strftime('%b %-d')}  {day_total:>4} pkgs   {detail}")
 
-    revenue = total * COMPANY_RATE
     print()
     print("by route:  " + "   ".join(
-        f"R{route}: {count} = ${count * card.for_route(route):.2f}"
+        f"R{route}: {count} pay ${count * card.for_route(route):.2f} / rev ${count * company.for_route(route):.2f}"
         for route, count in sorted(per_route.items())
     ))
     print(f"days worked:     {days_worked}")
     print(f"packages:        {total}")
     print(f"driver pay:      ${pay:.2f}")
-    print(f"company revenue: ${revenue:.2f}  (@ ${COMPANY_RATE:.2f}/pkg)")
+    print(f"company revenue: ${revenue:.2f}")
     print(f"profit:          ${revenue - pay:.2f}")
 
 

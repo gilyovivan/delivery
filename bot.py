@@ -11,11 +11,12 @@ from data import (
     init_db, record_delivery, get_week_data, set_driver_rate,
     get_all_rates, app_day, APP_DAY_NAMES, get_user_period_data,
     get_whitelist, add_driver, remove_driver, seed_drivers_from_whitelist,
-    set_route_rate, delete_route_rate, get_all_route_rates
+    set_route_rate, delete_route_rate, get_all_route_rates,
+    set_company_route_rate, delete_company_route_rate, get_company_route_rates
 )
-from rates import get_rate_card
+from rates import COMPANY_BASE_ROUTE, get_company_card, get_rate_card
 from config import (
-    BOT_TOKEN, WHITELIST as SEED_WHITELIST, COMPANY_RATE, DEFAULT_DRIVER_RATE,
+    BOT_TOKEN, WHITELIST as SEED_WHITELIST, DEFAULT_DRIVER_RATE,
     PACIFIC_TZ, REPORT_CHAT_ID, ADMIN_ID, VALID_ROUTES
 )
 
@@ -87,19 +88,20 @@ def build_driver_report_text(name, user_data, card, week_start):
     return "\n".join(lines)
 
 
-def build_driver_block(name, items, card, show_revenue=False):
+def build_driver_block(name, items, card, company, show_revenue=False):
     """items: list of (label, routes_dict), one per day, already sorted."""
     lines = [f"👤 *{name}*  (rate: {card.label()})"]
     user_total = 0
     driver_cost = 0.0
+    company_rev = 0.0
     for label, routes in items:
         day_total = sum(routes.values())
         user_total += day_total
         driver_cost += card.pay(routes)
+        company_rev += company.pay(routes)
         lines.append(f"  *{label}* — {day_total} pkgs")
         for route, count in sorted(routes.items()):
             lines.append(f"    Route {route}: {count}{card.suffix(route)}")
-    company_rev = user_total * COMPANY_RATE
     profit = company_rev - driver_cost
     lines.append(f"  Packages: *{user_total}*")
     if show_revenue:
@@ -110,17 +112,17 @@ def build_driver_block(name, items, card, show_revenue=False):
     return lines, user_total, company_rev, driver_cost
 
 
-def build_admin_driver_block(name, user_data, card, week_start, show_revenue=False):
+def build_admin_driver_block(name, user_data, card, company, week_start, show_revenue=False):
     items = []
     for day_num, routes in sorted(user_data.items()):
         day_dt = week_start + timedelta(days=day_num)
         items.append((f"{APP_DAY_NAMES[day_num]} {format_date(day_dt)}", routes))
-    return build_driver_block(name, items, card, show_revenue)
+    return build_driver_block(name, items, card, company, show_revenue)
 
 
-def build_period_driver_block(name, period_data, card, show_revenue=False):
+def build_period_driver_block(name, period_data, card, company, show_revenue=False):
     items = [(d.strftime("%a %b %-d"), routes) for d, routes in sorted(period_data.items())]
-    return build_driver_block(name, items, card, show_revenue)
+    return build_driver_block(name, items, card, company, show_revenue)
 
 
 # ─── /start ──────────────────────────────────────────────────────────────────
@@ -182,6 +184,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("📅 Custom period", callback_data="admin_customperiod")])
     keyboard.append([InlineKeyboardButton("✏️ Manual entry (backdate)", callback_data="admin_manualentry")])
     keyboard.append([InlineKeyboardButton("👥 Manage Drivers", callback_data="admin_managedrivers")])
+    keyboard.append([InlineKeyboardButton("💵 Company rates (Amazon)", callback_data="admin_companyrates")])
 
     markup = InlineKeyboardMarkup(keyboard)
     if update.message:
@@ -265,10 +268,41 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton(f"✏️ {name} — rates", callback_data=f"admin_rate_pick_{uid}"),
                 InlineKeyboardButton("🗑", callback_data=f"admin_rm_pick_{uid}"),
             ])
-        lines.append(f"Company rate: *${COMPANY_RATE:.2f}/pkg*")
+        lines.append(f"Amazon pays us: *{get_company_card().label()}*")
         keyboard.append([InlineKeyboardButton("➕ Add driver", callback_data="admin_adddriver")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
         await query.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return
+
+    if data == "admin_companyrates":
+        await show_company_rate_menu(query)
+        return
+
+    if data == "admin_crbase":
+        company = get_company_card()
+        context.user_data["admin_pending"] = {"action": "edit_company_rate", "route": None}
+        await query.message.edit_text(
+            f"Send the new *base* rate Amazon pays us (current: ${company.base:.2f}/pkg).\n"
+            f"It applies to every route without its own rate.\nExample: `1.75`",
+            parse_mode='Markdown'
+        )
+        return
+
+    if data.startswith("admin_crroute_"):
+        route = int(data.rsplit("_", 1)[-1])
+        company = get_company_card()
+        context.user_data["admin_pending"] = {"action": "edit_company_rate", "route": route}
+        await query.message.edit_text(
+            f"Send the new rate Amazon pays us for *Route {route}* "
+            f"(current: ${company.for_route(route):.2f}/pkg):\nExample: `1.80`",
+            parse_mode='Markdown'
+        )
+        return
+
+    if data.startswith("admin_crreset_"):
+        route = int(data.rsplit("_", 1)[-1])
+        delete_company_route_rate(route)
+        await show_company_rate_menu(query)
         return
 
     if data.startswith("admin_rate_pick_"):
@@ -349,9 +383,10 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         week_end = week_start + timedelta(days=6)
         week_range = f"{format_date(week_start)} – {format_date(week_end)}, {week_start.year}"
         week_data = get_week_data(ref_dt)
+        company = get_company_card()
 
         if target == "ALL":
-            lines = [f"*ADMIN REPORT*", f"{week_range}\n"]
+            lines = [f"*ADMIN REPORT*", f"{week_range}", f"Amazon pays: {company.label()}\n"]
             grand_packages = 0
             grand_company_revenue = 0.0
             grand_driver_cost = 0.0
@@ -363,7 +398,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     continue
                 any_data = True
                 card = get_rate_card(uid)
-                block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, week_start, show_revenue=True)
+                block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, company, week_start, show_revenue=True)
                 lines += block
                 lines.append("")
                 grand_packages += user_total
@@ -389,12 +424,33 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.message.reply_text(f"No data for {name} this period.")
                 return
             card = get_rate_card(uid)
-            block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, week_start, show_revenue=False)
+            block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, company, week_start, show_revenue=False)
             profit = company_rev - driver_cost
             lines = [f"*{name} — {week_range}*\n"] + block
             lines.append(f"\nYour profit: *${profit:.2f}*")
 
         await query.message.reply_text("\n".join(lines), parse_mode='Markdown')
+
+
+async def show_company_rate_menu(query):
+    company = get_company_card()
+    lines = [
+        "*Company rates — what Amazon pays us*\n",
+        f"Base: *${company.base:.2f}/pkg* — used for routes without their own rate.\n",
+    ]
+    keyboard = [[InlineKeyboardButton(f"✏️ Base — ${company.base:.2f}", callback_data="admin_crbase")]]
+    for route in sorted(VALID_ROUTES):
+        own = route in company.overrides
+        rate = company.for_route(route)
+        lines.append(f"Route {route}: *${rate:.2f}*" + ("" if own else " (base)"))
+        row = [InlineKeyboardButton(f"✏️ Route {route} — ${rate:.2f}", callback_data=f"admin_crroute_{route}")]
+        if own:
+            row.append(InlineKeyboardButton("↩️ base", callback_data=f"admin_crreset_{route}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    await query.message.edit_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+    )
 
 
 async def show_rate_menu(query, uid: int):
@@ -456,7 +512,7 @@ async def handle_period_date_input(update: Update, context: ContextTypes.DEFAULT
         return
 
     block, user_total, company_rev, driver_cost = build_period_driver_block(
-        name, period_data, card, show_revenue=True
+        name, period_data, card, get_company_card(), show_revenue=True
     )
     profit = company_rev - driver_cost
     lines = [f"*{range_str}*\n"] + block
@@ -535,6 +591,24 @@ async def handle_edit_rate_input(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"✅ Rate updated: {name}, Route {route} → ${rate:.2f}/pkg")
 
 
+async def handle_company_rate_input(update: Update, context: ContextTypes.DEFAULT_TYPE, route=None):
+    text = update.message.text.strip().replace(",", ".")
+    try:
+        rate = float(text)
+        if rate <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("Invalid rate. Send a positive number, e.g. 1.80")
+        return
+
+    if route is None:
+        set_company_route_rate(COMPANY_BASE_ROUTE, rate)
+        await update.message.reply_text(f"✅ Amazon base rate updated: ${rate:.2f}/pkg")
+    else:
+        set_company_route_rate(route, rate)
+        await update.message.reply_text(f"✅ Amazon rate updated: Route {route} → ${rate:.2f}/pkg")
+
+
 async def handle_add_driver_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     match = re.match(r"^(\d+)\s*,\s*(.+)$", text)
@@ -572,6 +646,8 @@ async def handle_admin_pending_input(update: Update, context: ContextTypes.DEFAU
         await handle_manual_entry_input(update, context, pending["uid"])
     elif action == "edit_rate":
         await handle_edit_rate_input(update, context, pending["uid"], pending.get("route"))
+    elif action == "edit_company_rate":
+        await handle_company_rate_input(update, context, pending.get("route"))
     elif action == "add_driver":
         await handle_add_driver_input(update, context)
 
@@ -721,7 +797,8 @@ async def admin_report(context, chat_id, now=None):
     week_end = week_start + timedelta(days=6)
     week_range = f"{format_date(week_start)} – {format_date(week_end)}, {now.year}"
 
-    lines = [f"ADMIN WEEKLY REPORT", f"{week_range}\n"]
+    company = get_company_card()
+    lines = [f"ADMIN WEEKLY REPORT", f"{week_range}", f"Amazon pays: {company.label()}\n"]
     grand_packages = 0
     grand_company_revenue = 0.0
     grand_driver_cost = 0.0
@@ -733,7 +810,7 @@ async def admin_report(context, chat_id, now=None):
             continue
         any_data = True
         card = get_rate_card(user_id_int)
-        block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, week_start, show_revenue=True)
+        block, user_total, company_rev, driver_cost = build_admin_driver_block(name, user_data, card, company, week_start, show_revenue=True)
         lines += block
         lines.append("")
         grand_packages += user_total

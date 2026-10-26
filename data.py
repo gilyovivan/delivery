@@ -64,6 +64,13 @@ def init_db():
                 )
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS company_route_rates (
+                    route       SMALLINT PRIMARY KEY,
+                    rate        NUMERIC(6,2) NOT NULL,
+                    updated_at  TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS drivers (
                     user_id     BIGINT PRIMARY KEY,
                     name        TEXT NOT NULL,
@@ -187,6 +194,36 @@ def get_all_route_rates() -> dict:
     for row in rows:
         result.setdefault(row["user_id"], {})[row["route"]] = float(row["rate"])
     return result
+
+
+def set_company_route_rate(route: int, rate: float):
+    """What Amazon pays us for one route."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO company_route_rates (route, rate, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (route)
+                DO UPDATE SET rate = EXCLUDED.rate, updated_at = NOW()
+            """, (route, rate))
+        conn.commit()
+
+
+def delete_company_route_rate(route: int):
+    """Drops the override so the route falls back to the base company rate."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM company_route_rates WHERE route = %s", (route,))
+        conn.commit()
+
+
+def get_company_route_rates() -> dict:
+    """Returns: { route_int: rate } — only routes with their own rate."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT route, rate FROM company_route_rates")
+            rows = cur.fetchall()
+    return {row["route"]: float(row["rate"]) for row in rows}
 
 
 def get_whitelist() -> dict:

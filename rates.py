@@ -3,8 +3,8 @@
 Shared by the bot and by report.py so both compute pay the same way.
 """
 
-from config import DEFAULT_DRIVER_RATE
-from data import get_driver_rate, get_route_rates
+from config import COMPANY_RATE, DEFAULT_DRIVER_RATE
+from data import get_company_route_rates, get_driver_rate, get_route_rates
 
 
 class RateCard:
@@ -35,3 +35,16 @@ class RateCard:
 
 def get_rate_card(user_id) -> RateCard:
     return RateCard(get_driver_rate(user_id, DEFAULT_DRIVER_RATE), get_route_rates(user_id))
+
+
+# The company base rate is stored in company_route_rates under this
+# pseudo-route, so the admin can change it from the bot without a redeploy.
+# VALID_ROUTES never contains 0. COMPANY_RATE is only the initial default.
+COMPANY_BASE_ROUTE = 0
+
+
+def get_company_card() -> RateCard:
+    """What Amazon pays us: a base rate plus per-route overrides."""
+    rates = get_company_route_rates()
+    base = rates.pop(COMPANY_BASE_ROUTE, COMPANY_RATE)
+    return RateCard(base, rates)
